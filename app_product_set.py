@@ -84,12 +84,36 @@ with tab_create:
         st.error(f"CSV must have columns: {required}. Found: {set(df.columns)}")
         st.stop()
 
-    st.success(f"Found **{len(df)}** product set(s) to create.")
-    with st.expander("Preview", expanded=True):
-        st.dataframe(df, use_container_width=True, hide_index=True)
+    total_rows  = len(df)
+    sets_per_batch = 10
+    total_batches  = (total_rows + sets_per_batch - 1) // sets_per_batch
 
-    if not st.button(f"🚀 Create {len(df)} product set(s)", type="primary"):
+    st.success(f"Found **{total_rows}** product set(s) → **{total_batches}** batch(es) of {sets_per_batch}.")
+
+    col_b, col_info = st.columns([1, 3])
+    batch_num = col_b.number_input(
+        "Batch to run", min_value=1, max_value=total_batches, value=1, step=1
+    )
+    batch_start = (batch_num - 1) * sets_per_batch
+    batch_end   = min(batch_start + sets_per_batch, total_rows)
+    col_info.info(f"Batch {batch_num}/{total_batches} → rows {batch_start+1}–{batch_end} of {total_rows}")
+
+    df_batch = df.iloc[batch_start:batch_end].reset_index(drop=True)
+
+    with st.expander(f"Preview — batch {batch_num}", expanded=True):
+        st.dataframe(df_batch, use_container_width=True, hide_index=True)
+
+    if not st.button(f"🚀 Run batch {batch_num} ({len(df_batch)} set(s))", type="primary"):
         st.stop()
+
+    df = df_batch   # process only this batch
+
+    # Pre-fetch existing product sets → build name → id map
+    with st.spinner("Checking existing product sets…"):
+        existing_sets, _ = get_product_sets(meta_token, catalog_id)
+    existing_map = {s["name"]: s["id"] for s in existing_sets}
+    if existing_map:
+        st.info(f"ℹ️ Found {len(existing_map)} existing product set(s) — duplicates will be skipped.")
 
     results = []
 
@@ -109,6 +133,19 @@ with tab_create:
                 "matched_fsns": "", "unmatched_fsns": raw_fsns,
                 "status": "failed", "error": "No catalog ID",
             })
+            continue
+
+        # ── Already exists? Return existing ID and skip ──────────────────
+        if set_name in existing_map:
+            existing_id = existing_map[set_name]
+            results.append({
+                "set_name": set_name, "product_set_id": existing_id,
+                "matched_count": "-", "unmatched_count": "-",
+                "matched_fsns": "", "unmatched_fsns": "",
+                "status": "existing", "error": "",
+            })
+            st.markdown(f"---\n**[{int(row_idx)+1}/{len(df)}] {set_name}** — already exists")
+            st.info(f"⏭️ Skipped — existing product set ID: `{existing_id}`")
             continue
 
         fsns = [f.strip() for f in raw_fsns.split("|") if f.strip()]
@@ -175,10 +212,11 @@ with tab_create:
     result_df = pd.DataFrame(results)
     st.dataframe(result_df, use_container_width=True, hide_index=True)
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("✅ Success", int((result_df["status"] == "success").sum()))
-    c2.metric("⚠️ Partial", int((result_df["status"] == "partial").sum()))
-    c3.metric("❌ Failed",  int((result_df["status"] == "failed").sum()))
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("✅ Created",  int((result_df["status"] == "success").sum()))
+    c2.metric("⚠️ Partial",  int((result_df["status"] == "partial").sum()))
+    c3.metric("⏭️ Existing", int((result_df["status"] == "existing").sum()))
+    c4.metric("❌ Failed",   int((result_df["status"] == "failed").sum()))
 
     csv_bytes = result_df.to_csv(index=False).encode()
     st.download_button(
