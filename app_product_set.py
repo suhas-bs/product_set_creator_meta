@@ -44,6 +44,8 @@ with tab_existing:
     st.caption(f"Catalog: `{catalog_id}`")
 
     if st.button("🔄 Fetch Product Sets", type="primary"):
+        import json as _json
+
         with st.spinner("Fetching…"):
             sets, err = get_product_sets(meta_token, catalog_id)
         if err:
@@ -60,6 +62,45 @@ with tab_existing:
                 df_sets.to_csv(index=False).encode(),
                 file_name="existing_product_sets.csv", mime="text/csv",
             )
+
+            # ── Duplicate FSN group detection ─────────────────────────────
+            st.divider()
+            st.subheader("🔁 Product Sets Sharing the Same FSN Group")
+
+            fsn_group_map: dict[str, list[str]] = {}  # fsn_key → [set_name, ...]
+            for s in sets:
+                raw_filter = s.get("filter") or ""
+                try:
+                    f = _json.loads(raw_filter) if isinstance(raw_filter, str) else raw_filter
+                    fsns = f.get("retailer_id", {}).get("is_any", [])
+                    key  = "|".join(sorted(fsns))   # canonical key
+                except Exception:
+                    key = raw_filter  # fallback: use raw string
+
+                if key:
+                    fsn_group_map.setdefault(key, []).append(s.get("name", "—"))
+
+            dupes = {k: v for k, v in fsn_group_map.items() if len(v) > 1}
+
+            if not dupes:
+                st.info("No product sets share the same FSN group.")
+            else:
+                rows = []
+                for fsn_key, names in dupes.items():
+                    sample_fsns = fsn_key[:120] + "…" if len(fsn_key) > 120 else fsn_key
+                    rows.append({
+                        "FSN Group (sample)":      sample_fsns,
+                        "# Sets with same FSNs":   len(names),
+                        "Product Set Names":        " | ".join(names),
+                    })
+                df_dupes = pd.DataFrame(rows)
+                st.warning(f"⚠️ **{len(dupes)}** FSN group(s) used by more than one product set.")
+                st.dataframe(df_dupes, use_container_width=True, hide_index=True)
+                st.download_button(
+                    "⬇️ Download Duplicates CSV",
+                    df_dupes.to_csv(index=False).encode(),
+                    file_name="duplicate_fsn_groups.csv", mime="text/csv",
+                )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — Create product sets (auto-batched)
