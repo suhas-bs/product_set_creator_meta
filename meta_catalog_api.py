@@ -43,19 +43,34 @@ def _get(path: str, token: str, timeout=(10, 60), **params) -> dict:
 
 
 def _get_all_pages(path: str, token: str, **params) -> list[dict]:
-    """Follow pagination cursors and collect all items."""
-    items = []
-    url   = _url(path)
-    p     = {"access_token": token, **params}
+    """Follow pagination cursors and collect all items.
+    Always keeps access_token + fields on every page request."""
+    items  = []
+    url    = _url(path)
+    # Fields we always want on every page
+    base_p = {"access_token": token, **params}
+    p      = base_p.copy()
+
     while url:
         try:
             r = requests.get(url, params=p, timeout=(10, 60), verify=False)
             d = r.json()
-        except Exception as e:
+        except Exception:
             break
         items.extend(d.get("data", []))
-        url = d.get("paging", {}).get("next")
-        p   = {}            # next URL already has params baked in
+        next_url = d.get("paging", {}).get("cursors", {}).get("after")
+        if next_url:
+            # Use cursor-based pagination: keeps original URL + adds after=cursor
+            p = {**base_p, "after": next_url}
+        else:
+            # Try full next URL (self-contained); pass only token in case fields are missing
+            raw_next = d.get("paging", {}).get("next")
+            if raw_next and raw_next != url:
+                url = raw_next
+                p   = {"access_token": token, **params}  # re-add fields explicitly
+            else:
+                break
+        continue
     return items
 
 
@@ -74,6 +89,20 @@ def _post(path: str, token: str, data: dict, timeout=(15, 60)) -> dict:
 
 
 # ── Product Sets ───────────────────────────────────────────────────────────────
+
+def find_product_set_by_name(token: str, catalog_id: str, name: str) -> str | None:
+    """Search for a product set by exact name. Returns product_set_id or None."""
+    d = _get(
+        f"{catalog_id}/product_sets",
+        token,
+        fields="id,name",
+        limit=200,
+    )
+    for item in d.get("data", []):
+        if item.get("name") == name:
+            return item.get("id")
+    return None
+
 
 def get_product_sets(token: str, catalog_id: str) -> tuple[list[dict], str | None]:
     """

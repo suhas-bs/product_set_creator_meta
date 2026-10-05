@@ -12,7 +12,7 @@ import time
 import pandas as pd
 import streamlit as st
 
-from meta_catalog_api import create_product_set, get_product_sets, lookup_fsns_batch
+from meta_catalog_api import create_product_set, find_product_set_by_name, get_product_sets, lookup_fsns_batch
 
 st.set_page_config(page_title="Meta Product Set Creator", page_icon="🗂️", layout="wide")
 
@@ -92,7 +92,8 @@ with tab_create:
     # ── Pre-fetch existing sets once ─────────────────────────────────────────
     with st.spinner("Loading existing product sets…"):
         existing_sets, _ = get_product_sets(meta_token, catalog_id)
-    existing_map = {s["name"]: s["id"] for s in existing_sets}
+    # Only keep entries where id is present; others will go through create flow
+    existing_map = {s["name"]: s["id"] for s in existing_sets if s.get("id")}
     st.info(f"ℹ️ {len(existing_map)} existing product set(s) found — duplicates will be skipped.")
 
     # ── Overall progress ──────────────────────────────────────────────────────
@@ -159,14 +160,27 @@ with tab_create:
                 ps_id, err = create_product_set(meta_token, cat_id, set_name, list(matched.keys()))
 
                 if err:
-                    all_results.append({
-                        "set_name": set_name, "product_set_id": None,
-                        "matched_count": len(matched), "unmatched_count": len(unmatched),
-                        "matched_fsns": "|".join(matched.keys()),
-                        "unmatched_fsns": "|".join(unmatched),
-                        "status": "failed", "error": err,
-                    })
-                    st.error(f"❌ **{set_name}** — {err}")
+                    # If it already exists in Meta, recover the existing ID by name
+                    recovered_id = find_product_set_by_name(meta_token, cat_id, set_name)
+                    if recovered_id:
+                        all_results.append({
+                            "set_name": set_name, "product_set_id": recovered_id,
+                            "matched_count": len(matched), "unmatched_count": len(unmatched),
+                            "matched_fsns": "|".join(matched.keys()),
+                            "unmatched_fsns": "|".join(unmatched),
+                            "status": "existing", "error": "already existed — ID recovered",
+                        })
+                        existing_map[set_name] = recovered_id
+                        st.warning(f"⏭️ **{set_name}** — already existed, recovered ID: `{recovered_id}`")
+                    else:
+                        all_results.append({
+                            "set_name": set_name, "product_set_id": None,
+                            "matched_count": len(matched), "unmatched_count": len(unmatched),
+                            "matched_fsns": "|".join(matched.keys()),
+                            "unmatched_fsns": "|".join(unmatched),
+                            "status": "failed", "error": err,
+                        })
+                        st.error(f"❌ **{set_name}** — {err}")
                 else:
                     tag = "success" if not unmatched else "partial"
                     all_results.append({
